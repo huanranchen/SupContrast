@@ -141,7 +141,7 @@ class SupervisedContrast():
         logit_mask = torch.eye(logits.shape[0],
                                device=self.device)  # N,N of where not same with self
         mask = mask * (1 - logit_mask)
-        exponential_logits = torch.exp(logits + logit_mask * float('-inf'), dim=1)
+        exponential_logits = torch.exp(logits - logit_mask * 1e6, dim=1)
         denominator = torch.log(torch.sum(exponential_logits, dim=1))
         log_probs = logits - denominator
         loss = -torch.sum(mask * log_probs) / 128
