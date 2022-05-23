@@ -35,7 +35,7 @@ class SupervisedContrast():
         print('managed to initialize queue!')
         print('-' * 100)
 
-    def enqueue(self, size=2):
+    def enqueue(self, size=1):
         '''
 
         :param size: queue_size*batch_size
@@ -71,7 +71,7 @@ class SupervisedContrast():
             y += [i] * now_x.shape[0]
         return torch.cat(x, dim=0), torch.tensor(y, device=self.device)
 
-    def train(self, lr=1e-5, weight_decay=0, t=1, total_epoch=100):
+    def train(self, lr=1e-4, weight_decay=0, t=1, total_epoch=100):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         criterion = self.chr_loss
         optimizer = torch.optim.AdamW(self.student.parameters(), lr=lr, weight_decay=weight_decay)
@@ -132,7 +132,7 @@ class SupervisedContrast():
         if torch.sum(mask) == 0:
             return torch.sum(mask * log_probs)
         loss = -torch.sum(mask * log_probs) / 128
-        print(loss, torch.sum(mask))
+        print(loss)
         return loss
 
 
