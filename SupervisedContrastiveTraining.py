@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -5,10 +6,12 @@ from torchvision import models
 import numpy as np
 from tqdm import tqdm
 
+
 def hook(module, grad_in, grad_out):
-    print('-'*100)
+    print('-' * 100)
     print(module)
     print(f'grad in {grad_in}, grad out {grad_out}')
+
 
 class SupervisedContrast():
     def __init__(self, loader, num_classes=60):
@@ -18,8 +21,19 @@ class SupervisedContrast():
         self.student = models.wide_resnet50_2(num_classes=256).to(self.device)
         self.teacher = models.wide_resnet50_2(num_classes=256).to(self.device)
         self.momentum_synchronize(m=0)
+        self.load_model()
         self.loader = loader
         self.initialize_queue()
+
+    def load_model(self):
+        if os.path.exists('teacher.pth'):
+            self.teacher.load_state_dict(torch.load('teacher.pth', map_location=self.device))
+            print('managed to load teacher')
+            print('-' * 100)
+        if os.path.exists('student.pth'):
+            self.student.load_state_dict(torch.load('student.pth', map_location=self.device))
+            print('managed to load student')
+            print('-' * 100)
 
     def initialize_queue(self, queue_size=10):
         '''
@@ -132,7 +146,6 @@ class SupervisedContrast():
         if torch.sum(mask) == 0:
             return torch.sum(mask * log_probs)
         loss = -torch.sum(mask * log_probs) / 128
-        print(loss)
         return loss
 
 
@@ -142,9 +155,11 @@ if __name__ == '__main__':
     paser = argparse.ArgumentParser()
     paser.add_argument('-b', '--batch_size', default=128)
     paser.add_argument('-t', '--total_epoch', default=10)
+    paser.add_argument('-l', '--lr', default=1e-4)
     args = paser.parse_args()
     batch_size = int(args.batch_size)
     total_epoch = int(args.total_epoch)
+    lr = float(args.lr)
 
     train_image_path = './public_dg_0416/train/'
     valid_image_path = './public_dg_0416/train/'
@@ -158,4 +173,4 @@ if __name__ == '__main__':
                               valid_image_path=valid_image_path,
                               label2id_path=label2id_path)
     a = SupervisedContrast(train_loader)
-    a.train(total_epoch=total_epoch)
+    a.train(total_epoch=total_epoch, lr = lr)
