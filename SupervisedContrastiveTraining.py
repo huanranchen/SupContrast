@@ -138,14 +138,12 @@ class SupervisedContrast():
 
         labels = labels.reshape(-1, 1)
         mask = labels == labels.T  # N, N of where is positive
-        logit_mask = torch.ones_like(logits) - torch.eye(logits.shape[0],
-                                                         device=self.device)  # N,N of where not same with self
-        mask = mask * logit_mask
-        exponential_logits = F.softmax(logits * logit_mask, dim=1)
+        logit_mask = torch.eye(logits.shape[0],
+                               device=self.device)  # N,N of where not same with self
+        mask = mask * (1 - logit_mask)
+        exponential_logits = torch.exp(logits + logit_mask * float('-inf'), dim=1)
         denominator = torch.log(torch.sum(exponential_logits, dim=1))
         log_probs = logits - denominator
-        if torch.sum(mask) == 0:
-            return torch.sum(mask * log_probs)
         loss = -torch.sum(mask * log_probs) / 128
         return loss
 
@@ -174,4 +172,4 @@ if __name__ == '__main__':
                               valid_image_path=valid_image_path,
                               label2id_path=label2id_path)
     a = SupervisedContrast(train_loader)
-    a.train(total_epoch=total_epoch, lr = lr)
+    a.train(total_epoch=total_epoch, lr=lr)
