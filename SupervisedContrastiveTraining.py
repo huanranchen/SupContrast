@@ -118,6 +118,7 @@ class SupervisedContrast():
 
             train_loss /= len(self.loader)
             print(f'epoch {epoch}, test loader loss = {train_loss}')
+            self.save_model()
 
     def save_model(self):
         torch.save(self.student.state_dict(), 'student.pth')
