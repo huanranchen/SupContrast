@@ -38,8 +38,6 @@ class SupervisedContrast():
 
         self.initialize_queue()
 
-
-
     def student_forward(self, x):
         x = self.student.conv1(x)
         x = self.student.bn1(x)
@@ -141,9 +139,7 @@ class SupervisedContrast():
                 y = y.to(device)
                 x = self.student_forward(x)  # N, 60
                 queue_x, queue_y = self.get_queue()
-                x = torch.cat([x, queue_x], dim=0)
-                y = torch.cat([y, queue_y], dim=0)
-                loss = criterion(x, y, t=t)
+                loss = criterion(x, y, queue_x, queue_y, t=t)
                 train_loss += loss.item()
                 optimizer.zero_grad()
                 loss.backward()
@@ -165,27 +161,21 @@ class SupervisedContrast():
         torch.save(self.student.state_dict(), 'student.pth')
         torch.save(self.teacher.state_dict(), 'teacher.pth')
 
-    def chr_loss(self, logits, labels, t=1, ):
+    def chr_loss(self, x, y, queue_x, queue_y, t=1, ):
         '''
-
-        :param logits: N, D
-        :param labels:N
+        :param x: N1, D
+        :param y: N1,
+        :param queue_x: N2,D
+        :param queue_y: N2
+        :param t:
         :return:
         '''
-        logits = F.normalize(logits, dim=1)
-        logits = logits @ logits.permute(1, 0) / t  # N, N
-        max_logits, _ = torch.max(logits, dim=1)
-        logits -= max_logits
-
-        labels = labels.reshape(-1, 1)
-        mask = labels == labels.T  # N, N of where is positive
-        logit_mask = torch.eye(logits.shape[0],
-                               device=self.device)  # N,N of where not same with self
-        mask = mask * (1 - logit_mask)
-        exponential_logits = torch.exp(logits - logit_mask * 1e6)
-        denominator = torch.log(torch.sum(exponential_logits, dim=1))
-        log_probs = logits - denominator
-        loss = -torch.sum(mask * log_probs) / torch.sum(mask)
+        x = F.normalize(x, dim=1)
+        queue_x = F.normalize(queue_x, dim=1)
+        gram = x @ queue_x.T / t  # N1, N2
+        label_mask = y.float().unsqueeze(1) @ queue_y.float().unsqueeze(0)  # N1, N2
+        log_probs = torch.log(F.softmax(gram, dim=1))
+        loss = torch.sum(-label_mask * log_probs)/torch.sum(label_mask)
         return loss
 
 
