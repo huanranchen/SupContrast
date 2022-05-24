@@ -74,15 +74,15 @@ class SupervisedContrast():
             print('managed to load student')
             print('-' * 100)
 
-    def initialize_queue(self, queue_size=10):
+    def initialize_queue(self, queue_size=1):
         '''
 
         :param queue_size: total samples = queue_size*batch_size
         :return:
         '''
         self.queue = {}
-        for i in range(self.num_classes):
-            self.queue[i] = []
+        self.queue['x'] = []
+        self.queue['y'] = []
 
         self.enqueue(queue_size)
         print('managed to initialize queue!')
@@ -101,14 +101,13 @@ class SupervisedContrast():
                     break
                 x = x.to(self.device)
                 y = y.to(self.device)
-                for i in range(self.num_classes):
-                    mask = y == i
-                    self.queue[i].append(self.teacher_forward(x[mask]))
+                self.queue['x'].append(self.teacher_forward(x))
+                self.queue['y'].append(y)
 
     def dequeue(self, size=1):
-        for i in range(self.num_classes):
-            for _ in range(size):
-                self.queue[i].pop(0)
+        for _ in range(size):
+            self.queue['x'].pop(0)
+            self.queue['y'].pop(0)
 
     def momentum_synchronize(self, m=0.9):
         for s, t in zip(self.student.parameters(), self.teacher.parameters()):
@@ -116,13 +115,7 @@ class SupervisedContrast():
             t.requires_grad = False
 
     def get_queue(self):
-        y = []
-        x = []
-        for i in range(self.num_classes):
-            now_x = torch.cat(self.queue[i], dim=0)
-            x.append(now_x)
-            y += [i] * now_x.shape[0]
-        return torch.cat(x, dim=0), torch.tensor(y, device=self.device)
+        return torch.cat(self.queue['x'], dim=0), torch.cat(self.queue['y'], dim=0)
 
     def train(self, lr=1e-4, weight_decay=0, t=1, total_epoch=100):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -140,9 +133,13 @@ class SupervisedContrast():
                 x = self.student_forward(x)  # N, 60
                 queue_x, queue_y = self.get_queue()
                 loss = criterion(x, y, queue_x, queue_y, t=t)
+                print(loss)
                 train_loss += loss.item()
                 optimizer.zero_grad()
                 loss.backward()
+                for name,param in self.student.named_parameters():
+                    print(name, torch.sum(param.grad**2))
+                # assert False
                 nn.utils.clip_grad_value_(self.student.parameters(), 0.1)
                 optimizer.step()
                 step += 1
@@ -170,12 +167,12 @@ class SupervisedContrast():
         :param t:
         :return:
         '''
-        x = F.normalize(x, dim=1)
-        queue_x = F.normalize(queue_x, dim=1)
         gram = x @ queue_x.T / t  # N1, N2
         label_mask = y.float().unsqueeze(1) @ queue_y.float().unsqueeze(0)  # N1, N2
         log_probs = torch.log(F.softmax(gram, dim=1))
-        loss = torch.sum(-label_mask * log_probs)/torch.sum(label_mask)
+        if torch.sum(label_mask) == 0:
+            return torch.sum(label_mask)
+        loss = torch.sum(-label_mask * log_probs) / torch.sum(label_mask)
         return loss
 
 
