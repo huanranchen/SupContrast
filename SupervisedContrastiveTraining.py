@@ -18,12 +18,53 @@ class SupervisedContrast():
         self.num_classes = num_classes
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # student don't have momentum while teacher have
-        self.student = models.wide_resnet50_2(num_classes=256).to(self.device)
-        self.teacher = models.wide_resnet50_2(num_classes=256).to(self.device)
+        self.student = models.wide_resnet50_2(num_classes=60).to(self.device)
+        self.teacher = models.wide_resnet50_2(num_classes=60).to(self.device)
         self.momentum_synchronize(m=0)
         self.load_model()
         self.loader = loader
+
+        self.student_mlp = nn.Sequential(
+            nn.Linear(2048, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+        ).to(self.device)
+
+        self.teacher_mlp = nn.Sequential(
+            nn.Linear(2048, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+        ).to(self.device)
+
         self.initialize_queue()
+
+
+
+    def student_forward(self, x):
+        x = self.student.conv1(x)
+        x = self.student.bn1(x)
+        x = self.student.relu(x)
+        x = self.student.maxpool(x)
+        x = self.student.layer1(x)
+        x = self.student.layer2(x)
+        x = self.student.layer3(x)
+        x = self.student.layer4(x)
+        x = self.student.avgpool(x)
+        x = x.squeeze(2).squeeze(2)
+        return self.student_mlp(x)
+
+    def teacher_forward(self, x):
+        x = self.teacher.conv1(x)
+        x = self.teacher.bn1(x)
+        x = self.teacher.relu(x)
+        x = self.teacher.maxpool(x)
+        x = self.teacher.layer1(x)
+        x = self.teacher.layer2(x)
+        x = self.teacher.layer3(x)
+        x = self.teacher.layer4(x)
+        x = self.teacher.avgpool(x)
+        x = x.squeeze(2).squeeze(2)
+        return self.teacher_mlp(x)
 
     def load_model(self):
         if os.path.exists('teacher.pth'):
@@ -64,7 +105,7 @@ class SupervisedContrast():
                 y = y.to(self.device)
                 for i in range(self.num_classes):
                     mask = y == i
-                    self.queue[i].append(self.teacher(x[mask]))
+                    self.queue[i].append(self.teacher_forward(x[mask]))
 
     def dequeue(self, size=1):
         for i in range(self.num_classes):
@@ -98,7 +139,7 @@ class SupervisedContrast():
             for x, y in pbar:
                 x = x.to(device)
                 y = y.to(device)
-                x = self.student(x)  # N, 60
+                x = self.student_forward(x)  # N, 60
                 queue_x, queue_y = self.get_queue()
                 x = torch.cat([x, queue_x], dim=0)
                 y = torch.cat([y, queue_y], dim=0)
@@ -141,10 +182,10 @@ class SupervisedContrast():
         logit_mask = torch.eye(logits.shape[0],
                                device=self.device)  # N,N of where not same with self
         mask = mask * (1 - logit_mask)
-        exponential_logits = torch.exp(logits - logit_mask * 1e6, dim=1)
+        exponential_logits = torch.exp(logits - logit_mask * 1e6)
         denominator = torch.log(torch.sum(exponential_logits, dim=1))
         log_probs = logits - denominator
-        loss = -torch.sum(mask * log_probs) / 128
+        loss = -torch.sum(mask * log_probs) / torch.sum(mask)
         return loss
 
 
