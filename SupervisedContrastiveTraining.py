@@ -18,8 +18,8 @@ class SupervisedContrast():
         self.num_classes = num_classes
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # student don't have momentum while teacher have
-        self.student = models.wide_resnet50_2(num_classes=60).to(self.device)
-        self.teacher = models.wide_resnet50_2(num_classes=60).to(self.device)
+        self.student = models.wide_resnet50_2(num_classes=1000, pretrained=True).to(self.device)
+        self.teacher = models.wide_resnet50_2(num_classes=1000, pretrained=True).to(self.device)
         self.momentum_synchronize(m=0)
         self.load_model()
         self.loader = loader
@@ -117,7 +117,7 @@ class SupervisedContrast():
     def get_queue(self):
         return torch.cat(self.queue['x'], dim=0), torch.cat(self.queue['y'], dim=0)
 
-    def train(self, lr=1e-4, weight_decay=0, t=1, total_epoch=100):
+    def train(self, lr=1e-4, weight_decay=0, t=0.07, total_epoch=100):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         criterion = self.chr_loss
         optimizer = torch.optim.AdamW(self.student.parameters(), lr=lr, weight_decay=weight_decay)
@@ -168,10 +168,61 @@ class SupervisedContrast():
         max_value, _ = torch.max(gram, dim=1)
         gram = gram - max_value.unsqueeze(1)
         denominator = torch.sum(torch.exp(gram), dim=1)
+
         log_probs = gram - torch.log(denominator).unsqueeze(1)
         if torch.sum(label_mask) == 0:
             return torch.sum(label_mask)
         loss = torch.sum(-label_mask * log_probs) / torch.sum(label_mask)
+        # print(torch.sum(label_mask), -torch.sum(torch.log(denominator))/128)
+        return loss
+
+    def train_without_momentum(self, lr=1e-4, weight_decay=0, t=1, total_epoch=100):
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        criterion = self.chr_loss_without_queue
+        optimizer = torch.optim.AdamW(self.student.parameters(), lr=lr, weight_decay=weight_decay)
+        print('now we start training!!!')
+        for epoch in range(1, total_epoch + 1):
+            self.student.train()
+            train_loss = 0
+            step = 0
+            pbar = tqdm(self.loader)
+            for x, y in pbar:
+                x = x.to(device)
+                y = y.to(device)
+                x = self.student_forward(x)  # N, 60
+                loss = criterion(x, y, t=t)
+                train_loss += loss.item()
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_value_(self.student.parameters(), 0.1)
+                optimizer.step()
+                step += 1
+                # scheduler.step()
+                if step % 10 == 0:
+                    pbar.set_postfix_str(f'loss = {train_loss / step}')
+
+            train_loss /= len(self.loader)
+            print(f'epoch {epoch}, test loader loss = {train_loss}')
+            self.save_model()
+
+    def chr_loss_without_queue(self, x, y, t=0.07):
+        '''
+
+        :param x: N, D
+        :param y: N
+        :return:
+        '''
+        gram = x @ x.T / t
+        max_value, _ = torch.max(gram, dim=1)
+        gram -= max_value.unsqueeze(1)
+        label_mask = torch.eye(x.shape[0], device=self.device)
+        y = y.float().unsqueeze(1) @ y.float().unsqueeze(0)
+        y *= (1-label_mask)
+        denominator = torch.log(torch.sum(torch.exp(gram - label_mask * 1e6), dim = 1)).unsqueeze(1)
+        log_prob = gram - denominator
+        if torch.sum(y) == 0:
+            return torch.sum(y)
+        loss = torch.sum(- log_prob * y)/ torch.sum(y)
         return loss
 
 
@@ -199,4 +250,4 @@ if __name__ == '__main__':
                               valid_image_path=valid_image_path,
                               label2id_path=label2id_path)
     a = SupervisedContrast(train_loader)
-    a.train(total_epoch=total_epoch, lr=lr)
+    a.train_without_momentum(total_epoch=total_epoch, lr=lr)
