@@ -74,7 +74,7 @@ class SupervisedContrast():
             print('managed to load student')
             print('-' * 100)
 
-    def initialize_queue(self, queue_size=5):
+    def initialize_queue(self, queue_size=10):
         '''
 
         :param queue_size: total samples = queue_size*batch_size
@@ -142,9 +142,9 @@ class SupervisedContrast():
                 # scheduler.step()
                 if step % 10 == 0:
                     pbar.set_postfix_str(f'loss = {train_loss / step}')
+                self.momentum_synchronize()
                 self.enqueue()
                 self.dequeue()
-                self.momentum_synchronize()
 
             train_loss /= len(self.loader)
             print(f'epoch {epoch}, test loader loss = {train_loss}')
