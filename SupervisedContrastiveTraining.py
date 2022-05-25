@@ -74,7 +74,7 @@ class SupervisedContrast():
             print('managed to load student')
             print('-' * 100)
 
-    def initialize_queue(self, queue_size=1):
+    def initialize_queue(self, queue_size=5):
         '''
 
         :param queue_size: total samples = queue_size*batch_size
@@ -133,13 +133,9 @@ class SupervisedContrast():
                 x = self.student_forward(x)  # N, 60
                 queue_x, queue_y = self.get_queue()
                 loss = criterion(x, y, queue_x, queue_y, t=t)
-                print(loss)
                 train_loss += loss.item()
                 optimizer.zero_grad()
                 loss.backward()
-                for name,param in self.student.named_parameters():
-                    print(name, torch.sum(param.grad**2))
-                # assert False
                 nn.utils.clip_grad_value_(self.student.parameters(), 0.1)
                 optimizer.step()
                 step += 1
@@ -169,7 +165,10 @@ class SupervisedContrast():
         '''
         gram = x @ queue_x.T / t  # N1, N2
         label_mask = y.float().unsqueeze(1) @ queue_y.float().unsqueeze(0)  # N1, N2
-        log_probs = torch.log(F.softmax(gram, dim=1))
+        max_value, _ = torch.max(gram, dim=1)
+        gram = gram - max_value.unsqueeze(1)
+        denominator = torch.sum(torch.exp(gram), dim=1)
+        log_probs = gram - torch.log(denominator).unsqueeze(1)
         if torch.sum(label_mask) == 0:
             return torch.sum(label_mask)
         loss = torch.sum(-label_mask * log_probs) / torch.sum(label_mask)
