@@ -7,33 +7,23 @@ import numpy as np
 from tqdm import tqdm
 
 
-def hook(module, grad_in, grad_out):
-    print('-' * 100)
-    print(module)
-    print(f'grad in {grad_in}, grad out {grad_out}')
-
-
 class SupervisedContrast():
     def __init__(self, loader, num_classes=60):
         self.num_classes = num_classes
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # student don't have momentum while teacher have
-        self.student = models.wide_resnet50_2(num_classes=1000, pretrained=True).to(self.device)
-        self.teacher = models.wide_resnet50_2(num_classes=1000, pretrained=True).to(self.device)
+        self.student = models.wide_resnet50_2(num_classes=60).to(self.device)
+        self.teacher = models.wide_resnet50_2(num_classes=60).to(self.device)
         self.momentum_synchronize(m=0)
         self.load_model()
         self.loader = loader
 
         self.student_mlp = nn.Sequential(
             nn.Linear(2048, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, 512),
         ).to(self.device)
 
         self.teacher_mlp = nn.Sequential(
             nn.Linear(2048, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, 512),
         ).to(self.device)
 
         self.initialize_queue()
@@ -164,19 +154,17 @@ class SupervisedContrast():
         :return:
         '''
         gram = x @ queue_x.T / t  # N1, N2
-        label_mask = y.float().unsqueeze(1) @ queue_y.float().unsqueeze(0)  # N1, N2
-        max_value, _ = torch.max(gram, dim=1)
-        gram = gram - max_value.unsqueeze(1)
-        denominator = torch.sum(torch.exp(gram), dim=1)
-
-        log_probs = gram - torch.log(denominator).unsqueeze(1)
+        label_mask = (y.unsqueeze(1) == queue_y.unsqueeze(0)).float()  # N1, N2
+        max_value, _ = torch.max(gram, dim=1, keepdim=True)
+        gram = gram - max_value.detach()
+        denominator = torch.sum(torch.exp(gram), dim=1, keepdim=True)
+        log_probs = gram - torch.log(denominator)
         if torch.sum(label_mask) == 0:
             return torch.sum(label_mask)
         loss = torch.sum(-label_mask * log_probs) / torch.sum(label_mask)
-        # print(torch.sum(label_mask), -torch.sum(torch.log(denominator))/128)
         return loss
 
-    def train_without_momentum(self, lr=1e-4, weight_decay=0, t=1, total_epoch=100):
+    def train_without_momentum(self, lr=1e-4, weight_decay=0, total_epoch=100):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         criterion = self.chr_loss_without_queue
         optimizer = torch.optim.AdamW(self.student.parameters(), lr=lr, weight_decay=weight_decay)
@@ -190,7 +178,7 @@ class SupervisedContrast():
                 x = x.to(device)
                 y = y.to(device)
                 x = self.student_forward(x)  # N, 60
-                loss = criterion(x, y, t=t)
+                loss = criterion(x, y)
                 train_loss += loss.item()
                 optimizer.zero_grad()
                 loss.backward()
@@ -207,30 +195,70 @@ class SupervisedContrast():
 
     def chr_loss_without_queue(self, x, y, t=0.07):
         '''
-
         :param x: N, D
         :param y: N
         :return:
         '''
-        gram = x @ x.T / t
-        max_value, _ = torch.max(gram, dim=1)
-        gram -= max_value.unsqueeze(1)
+        x = F.normalize(x, dim=1)
         label_mask = torch.eye(x.shape[0], device=self.device)
-        y = y.float().unsqueeze(1) @ y.float().unsqueeze(0)
-        y *= (1-label_mask)
-        denominator = torch.log(torch.sum(torch.exp(gram - label_mask * 1e6), dim = 1)).unsqueeze(1)
+        gram = x @ x.T / t
+        max_value, _ = torch.max(gram - label_mask * 1e6, dim=1, keepdim=True)
+        gram -= max_value.detach()
+        y = (y.unsqueeze(1) == y.unsqueeze(0)).float()
+        y *= (1 - label_mask)
+        denominator = torch.log(torch.sum(torch.exp(gram - label_mask * 1e6), dim=1, keepdim=True))
         log_prob = gram - denominator
         if torch.sum(y) == 0:
             return torch.sum(y)
-        loss = torch.sum(- log_prob * y)/ torch.sum(y)
+        loss = torch.sum(- log_prob * y) / torch.sum(y)
         return loss
+
+    def transfer_learning(self, lr=1e-4, weight_decay=0, total_epoch=100):
+        for module in self.student.modules():
+            if isinstance(module, nn.Linear):
+                module.requires_grad_(requires_grad=True)
+                print('only fc requires grad')
+            else:
+                module.requires_grad_(requires_grad=False)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.AdamW(self.student.parameters(), lr=lr, weight_decay=weight_decay)
+        print('now we start training!!!')
+        for epoch in range(1, total_epoch + 1):
+            self.student.train()
+            train_loss = 0
+            train_acc = 0
+            step = 0
+            pbar = tqdm(self.loader)
+            for x, y in pbar:
+                x = x.to(device)
+                y = y.to(device)
+                x = self.student(x)  # N, 60
+                _, pre = torch.max(x, dim=1)
+                loss = criterion(x, y)
+                train_acc += torch.sum(pre == y).item() / y.shape[0]
+                # print(pre)
+                train_loss += loss.item()
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_value_(self.student.parameters(), 0.1)
+                optimizer.step()
+                step += 1
+                # scheduler.step()
+                if step % 10 == 0:
+                    pbar.set_postfix_str(f'loss = {train_loss / step}, acc={train_acc / step}')
+
+            train_loss /= len(self.loader)
+            train_acc /= len(self.loader)
+            print(f'epoch {epoch}, loss = {train_loss}, acc = {train_acc}')
+            self.save_model()
 
 
 if __name__ == '__main__':
     import argparse
 
     paser = argparse.ArgumentParser()
-    paser.add_argument('-b', '--batch_size', default=128)
+    paser.add_argument('-b', '--batch_size', default=3)
     paser.add_argument('-t', '--total_epoch', default=10)
     paser.add_argument('-l', '--lr', default=1e-4)
     args = paser.parse_args()
@@ -251,3 +279,12 @@ if __name__ == '__main__':
                               label2id_path=label2id_path)
     a = SupervisedContrast(train_loader)
     a.train_without_momentum(total_epoch=total_epoch, lr=lr)
+
+    # from torchvision.datasets import CIFAR10
+    # from torch.utils.data import DataLoader
+    # from torchvision.transforms import ToTensor
+    #
+    # dataset = CIFAR10('dataset', download=False, transform=ToTensor())
+    # loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=8)
+    # a = SupervisedContrast(loader)
+    # a.transfer_learning(total_epoch=total_epoch, lr=lr)
